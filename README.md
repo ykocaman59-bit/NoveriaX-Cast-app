@@ -1,7 +1,14 @@
-# NoveriaX Cast (tek APK)
+# NoveriaX Cast app (tek APK)
 
 Telefona kurulan **tek bir APK**. TV'ye hiçbir şey kurulmaz.
 Telefon ve TV aynı Wi-Fi ağındayken TV'leri bulur, listeye ekler ve telefon ekranını TV'ye yansıtır.
+
+## İki mod
+1. **Video / Foto Gönder** (filmlerdeki Cast butonu gibi): Telefondaki video/foto/ses TV'ye gönderilir, TV dosyayı telefondan
+   kendisi çekip oynatır. Gecikme, kasma, donma yok; TV'nin desteklediği en yüksek kalitede (Full HD / 4K) oynar.
+   TV genelde MP4 (H.264/H.265) ve JPG/PNG destekler; MKV/AVI gibi biçimler TV'ye göre oynamayabilir.
+2. **Yansıt** (tüm ekran): Telefonun ekranı Full HD'ye kadar canlı yansıtılır. TV'ye uygulama kurulmadığı için
+   yaklaşık 3-8 sn gecikme olur (Cast alıcısının sınırı).
 
 ## Nasıl çalışır?
 - **Cihaz Tara**: Aynı ağdaki Google Cast (Chromecast yerleşik) cihazları mDNS ile bulunur (`_googlecast._tcp`).
