@@ -78,9 +78,7 @@ class ScreenCastService : Service() {
         }
         if (running) return
 
-        val host = intent.getStringExtra(EXTRA_HOST)
-        val port = intent.getIntExtra(EXTRA_PORT, CastConst.CAST_PORT)
-        val id = intent.getStringExtra(EXTRA_DEVICE_ID)
+        val device = intent.getDevice()
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
         val data: Intent? = if (Build.VERSION.SDK_INT >= 33) {
             intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
@@ -88,7 +86,7 @@ class ScreenCastService : Service() {
             @Suppress("DEPRECATION")
             intent.getParcelableExtra(EXTRA_RESULT_DATA)
         }
-        if (host == null || id == null || data == null) {
+        if (device == null || data == null) {
             CastState.lastError.value = "Yansıtma başlatılamadı (eksik bilgi)."
             stopForegroundAndSelf()
             return
@@ -113,7 +111,10 @@ class ScreenCastService : Service() {
 
         running = true
         userStop = false
-        worker = Thread({ runCast(host, port, id) }, "NoveriaX-Cast").also { it.start() }
+        worker = Thread({
+            if (device.type == TvDevice.TYPE_DLNA) runDlnaCast(device)
+            else runCast(device.host, device.port, device.id)
+        }, "NoveriaX-Cast").also { it.start() }
     }
 
     private fun handleStop() {
@@ -252,7 +253,148 @@ class ScreenCastService : Service() {
         }
     }
 
-    private fun captureSize(): Triple<Int, Int, Int> {
+    /**
+     * DLNA/UPnP TV'ler için: ekranı H.264 → MPEG-TS olarak HTTP ile yayınlar,
+     * TV'ye SetAVTransportURI + Play komutu gönderir. "Yansıtmadan Çık" → Stop komutu.
+     */
+    private fun runDlnaCast(device: TvDevice) {
+        var encoder: MediaCodec? = null
+        var inputSurface: Surface? = null
+        var display: VirtualDisplay? = null
+        var server: TsStreamServer? = null
+        var commandsSent = false
+        val net = NetworkManager(this)
+        val dlna = DlnaClient(net)
+        CastState.castingDeviceId.value = device.id
+        try {
+            val phoneIp = net.phoneWifiIp()
+            if (phoneIp == null) {
+                CastState.lastError.value = "Telefon - Çevrimdışı"
+                return
+            }
+            val srv = TsStreamServer()
+            server = srv
+            srv.start()
+
+            val (w, h, dpi) = captureSize(1280)
+            val (enc, surf) = createDlnaEncoder(w, h)
+            encoder = enc
+            inputSurface = surf
+            display = projection!!.createVirtualDisplay(
+                "NoveriaXCast", w, h, dpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                surf, null, null
+            )
+
+            // TV komutları ayrı iş parçacığında; bu sırada kodlayıcı kare üretmeye devam eder.
+            val url = "http://$phoneIp:${srv.port}/screen.ts"
+            commandsSent = true
+            val startedAt = SystemClock.elapsedRealtime()
+            Thread({
+                val err = dlna.play(device, url, "video/mpeg", true)
+                if (err != null) {
+                    if (running) CastState.lastError.value = err
+                    userStop = true
+                    running = false
+                    return@Thread
+                }
+                var stopped = 0
+                while (running) {
+                    try { Thread.sleep(3000) } catch (_: InterruptedException) { break }
+                    if (!running) break
+                    val elapsed = SystemClock.elapsedRealtime() - startedAt
+                    if (!srv.everConnected && elapsed > 20_000) {
+                        CastState.lastError.value =
+                            "TV yayına bağlanmadı. TV bu yayın biçimini desteklemiyor olabilir."
+                        userStop = true
+                        running = false
+                        break
+                    }
+                    if (elapsed > 15_000) {
+                        val st = dlna.transportState(device)?.uppercase()
+                        if (st == "STOPPED" || st == "NO_MEDIA_PRESENT") stopped++ else if (st != null) stopped = 0
+                        if (stopped >= 2) { // TV'den kapatıldı
+                            userStop = true
+                            running = false
+                        }
+                    }
+                }
+            }, "NoveriaX-DLNA-Monitor").apply { isDaemon = true }.start()
+
+            val muxer = LiveTsMuxer()
+            var spsPps: ByteArray? = null
+            val info = MediaCodec.BufferInfo()
+            while (running) {
+                val idx = enc.dequeueOutputBuffer(info, 100_000)
+                if (idx >= 0) {
+                    val buf = enc.getOutputBuffer(idx)
+                    if (buf != null && info.size > 0) {
+                        buf.position(info.offset)
+                        buf.limit(info.offset + info.size)
+                        val bytes = ByteArray(info.size)
+                        buf.get(bytes)
+                        if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                            spsPps = bytes
+                        } else {
+                            val key = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+                            srv.broadcast(muxer.mux(bytes, info.presentationTimeUs, key, spsPps), key)
+                        }
+                    }
+                    enc.releaseOutputBuffer(idx, false)
+                }
+            }
+        } catch (e: Exception) {
+            if (!userStop) {
+                CastState.lastError.value = "Yansıtma kesildi: ${e.message ?: "bağlantı hatası"}"
+            }
+        } finally {
+            // "Yansıtmadan Çık": TV'ye Stop gönder, TV kendi ekranına dönsün.
+            try { if (commandsSent) dlna.stop(device) } catch (_: Exception) {}
+            try { server?.stop() } catch (_: Exception) {}
+            try { display?.release() } catch (_: Exception) {}
+            try { encoder?.stop() } catch (_: Exception) {}
+            try { encoder?.release() } catch (_: Exception) {}
+            try { inputSurface?.release() } catch (_: Exception) {}
+            try { projection?.stop() } catch (_: Exception) {}
+            projection = null
+            worker = null
+            running = false
+            CastState.castingDeviceId.value = null
+            Handler(Looper.getMainLooper()).post { stopForegroundAndSelf() }
+        }
+    }
+
+    /** Önce Main profil + sabit bit hızı denenir; cihaz desteklemezse sade ayara düşülür. */
+    private fun createDlnaEncoder(w: Int, h: Int): Pair<MediaCodec, Surface> {
+        var last: Exception? = null
+        for (strict in listOf(true, false)) {
+            var enc: MediaCodec? = null
+            try {
+                val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
+                    setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                    setInteger(MediaFormat.KEY_BIT_RATE, 4_000_000)
+                    setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
+                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                    setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 1_000_000L)
+                    if (strict) {
+                        setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileMain)
+                        setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+                    }
+                }
+                enc = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                enc.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                val surf = enc.createInputSurface()
+                enc.start()
+                return enc to surf
+            } catch (e: Exception) {
+                last = e
+                try { enc?.release() } catch (_: Exception) {}
+            }
+        }
+        throw last ?: IllegalStateException("Video kodlayıcı başlatılamadı")
+    }
+
+    private fun captureSize(maxDim: Int = MAX_DIMENSION): Triple<Int, Int, Int> {
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         var width: Int
         var height: Int
@@ -267,7 +409,7 @@ class ScreenCastService : Service() {
             width = dm.widthPixels
             height = dm.heightPixels
         }
-        val scale = min(1f, MAX_DIMENSION.toFloat() / max(width, height))
+        val scale = min(1f, maxDim.toFloat() / max(width, height))
         width = ((width * scale).toInt() / 2) * 2
         height = ((height * scale).toInt() / 2) * 2
         return Triple(width, height, resources.displayMetrics.densityDpi)

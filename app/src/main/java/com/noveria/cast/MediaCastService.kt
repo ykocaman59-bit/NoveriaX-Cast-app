@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 
 /**
@@ -61,19 +62,20 @@ class MediaCastService : Service() {
         }
         if (running) return
 
-        val host = intent.getStringExtra(EXTRA_HOST)
-        val port = intent.getIntExtra(EXTRA_PORT, CastConst.CAST_PORT)
-        val id = intent.getStringExtra(EXTRA_DEVICE_ID)
+        val device = intent.getDevice()
         val uriStr = intent.getStringExtra(EXTRA_URI)
         val mime = intent.getStringExtra(EXTRA_MIME) ?: "video/mp4"
-        if (host == null || id == null || uriStr == null) {
+        if (device == null || uriStr == null) {
             CastState.lastError.value = "Gönderme başlatılamadı (eksik bilgi)."
             stopForegroundAndSelf()
             return
         }
         running = true
         userStop = false
-        worker = Thread({ runMedia(host, port, id, Uri.parse(uriStr), mime) }, "NoveriaX-Media").also { it.start() }
+        worker = Thread({
+            if (device.type == TvDevice.TYPE_DLNA) runDlnaMedia(device, Uri.parse(uriStr), mime)
+            else runMedia(device.host, device.port, device.id, Uri.parse(uriStr), mime)
+        }, "NoveriaX-Media").also { it.start() }
     }
 
     private fun handleStop() {
@@ -120,6 +122,51 @@ class MediaCastService : Service() {
         } finally {
             try { if (cast.alive) cast.stopApp() } catch (_: Exception) {}
             try { cast.close() } catch (_: Exception) {}
+            try { server.stop() } catch (_: Exception) {}
+            worker = null
+            running = false
+            CastState.castingDeviceId.value = null
+            Handler(Looper.getMainLooper()).post { stopForegroundAndSelf() }
+        }
+    }
+
+    /** DLNA/UPnP TV'ye dosyayı oynattırır: TV dosyayı telefondan HTTP (Range destekli) ile çeker. */
+    private fun runDlnaMedia(device: TvDevice, uri: Uri, mime: String) {
+        val net = NetworkManager(this)
+        val dlna = DlnaClient(net)
+        val server = FileServer(contentResolver, uri, mime)
+        var sent = false
+        CastState.castingDeviceId.value = device.id
+        try {
+            val phoneIp = net.phoneWifiIp()
+            if (phoneIp == null) {
+                CastState.lastError.value = "Telefon - Çevrimdışı"
+                return
+            }
+            server.start()
+            sent = true
+            val err = dlna.play(device, "http://$phoneIp:${server.port}/media", mime, false)
+            if (err != null) {
+                if (running) CastState.lastError.value = err
+                return
+            }
+            val startedAt = SystemClock.elapsedRealtime()
+            var stopped = 0
+            while (running) {
+                Thread.sleep(3000)
+                if (SystemClock.elapsedRealtime() - startedAt > 9_000) {
+                    val st = dlna.transportState(device)?.uppercase()
+                    if (st == "STOPPED" || st == "NO_MEDIA_PRESENT") stopped++ else if (st != null) stopped = 0
+                    if (stopped >= 2) { // video bitti ya da TV'den kapatıldı
+                        userStop = true
+                        break
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            if (!userStop) CastState.lastError.value = "Gönderme kesildi: ${e.message ?: "bağlantı hatası"}"
+        } finally {
+            try { if (sent) dlna.stop(device) } catch (_: Exception) {}
             try { server.stop() } catch (_: Exception) {}
             worker = null
             running = false

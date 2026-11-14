@@ -16,7 +16,15 @@ class DeviceStore(context: Context) {
             val arr = JSONArray(raw)
             (0 until arr.length()).map { i ->
                 val o = arr.getJSONObject(i)
-                TvDevice(o.getString("name"), o.getString("host"), o.getInt("port"))
+                TvDevice(
+                    name = o.getString("name"),
+                    host = o.getString("host"),
+                    port = o.optInt("port", CastConst.CAST_PORT),
+                    type = o.optString("type", TvDevice.TYPE_CAST),
+                    location = o.optString("location", ""),
+                    controlUrl = o.optString("controlUrl", ""),
+                    serviceType = o.optString("serviceType", "")
+                )
             }
         } catch (e: Exception) {
             emptyList()
@@ -24,8 +32,7 @@ class DeviceStore(context: Context) {
     }
 
     fun add(device: TvDevice) {
-        val list = getAll().filter { it.id != device.id } + device
-        save(list)
+        save(getAll().filter { it.id != device.id } + device)
     }
 
     fun remove(id: String) {
@@ -40,6 +47,10 @@ class DeviceStore(context: Context) {
                     .put("name", it.name)
                     .put("host", it.host)
                     .put("port", it.port)
+                    .put("type", it.type)
+                    .put("location", it.location)
+                    .put("controlUrl", it.controlUrl)
+                    .put("serviceType", it.serviceType)
             )
         }
         prefs.edit().putString(KEY_DEVICES, arr.toString()).apply()

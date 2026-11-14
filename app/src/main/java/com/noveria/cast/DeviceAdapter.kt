@@ -53,7 +53,7 @@ class DeviceAdapter(private val listener: Listener) :
         val casting = castingId == d.id
 
         b.tvName.text = d.name
-        b.tvAddress.text = "${d.host}:${d.port}"
+        b.tvAddress.text = d.addressLabel
 
         when {
             casting -> {
@@ -121,7 +121,7 @@ class FoundDeviceAdapter : RecyclerView.Adapter<FoundDeviceAdapter.VH>() {
     override fun onBindViewHolder(holder: VH, position: Int) {
         val d = items[position]
         holder.b.tvName.text = d.name
-        holder.b.tvAddress.text = "${d.host}:${d.port}"
+        holder.b.tvAddress.text = d.addressLabel
         holder.b.rbSelect.isChecked = d.id == selectedId
         holder.b.root.setOnClickListener {
             selectedId = d.id

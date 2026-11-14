@@ -94,6 +94,7 @@ class MainActivity : AppCompatActivity() {
         binding.rvFound.adapter = foundAdapter
 
         binding.btnScan.setOnClickListener { startScan() }
+        binding.btnMiracast.setOnClickListener { openSystemCastSettings() }
         binding.btnAddCast.setOnClickListener {
             val selected = foundAdapter.getSelected()
             if (selected == null) toast("Önce listeden bir TV seçin") else beginCast(selected, saveFirst = true)
@@ -265,7 +266,9 @@ class MainActivity : AppCompatActivity() {
                 binding.btnScan.isEnabled = true
                 if (foundAdapter.count == 0) {
                     binding.tvFoundEmpty.text =
-                        "Cihaz bulunamadı. TV'nin açık ve telefonla aynı Wi-Fi ağında olduğundan emin olun (TV'de Google Cast / Chromecast yerleşik olmalı)."
+                        "Cihaz bulunamadı. TV açık ve aynı Wi-Fi'da olmalı; TV Google Cast veya DLNA desteklemelidir. " +
+                        "TV ekranında PIN'li \"Ekran yansıtma\" ekranı görünüyorsa bu Miracast'tir: " +
+                        "yukarıdaki \"Miracast / Sistem Ekran Yansıtma\" düğmesini kullanın.\n\nTanı:\n" + net.scanReport()
                     binding.tvFoundEmpty.visibility = View.VISIBLE
                 }
             }
@@ -326,10 +329,7 @@ class MainActivity : AppCompatActivity() {
             action = ScreenCastService.ACTION_START
             putExtra(ScreenCastService.EXTRA_RESULT_CODE, resultCode)
             putExtra(ScreenCastService.EXTRA_RESULT_DATA, data)
-            putExtra(ScreenCastService.EXTRA_HOST, device.host)
-            putExtra(ScreenCastService.EXTRA_PORT, device.port)
-            putExtra(ScreenCastService.EXTRA_DEVICE_ID, device.id)
-            putExtra(ScreenCastService.EXTRA_DEVICE_NAME, device.name)
+            putDevice(device)
         }
         ContextCompat.startForegroundService(this, i)
     }
@@ -365,10 +365,7 @@ class MainActivity : AppCompatActivity() {
                 action = MediaCastService.ACTION_START
                 putExtra(MediaCastService.EXTRA_URI, uri.toString())
                 putExtra(MediaCastService.EXTRA_MIME, mime)
-                putExtra(MediaCastService.EXTRA_HOST, device.host)
-                putExtra(MediaCastService.EXTRA_PORT, device.port)
-                putExtra(MediaCastService.EXTRA_DEVICE_ID, device.id)
-                putExtra(MediaCastService.EXTRA_DEVICE_NAME, device.name)
+                putDevice(device)
             }
             ContextCompat.startForegroundService(this@MainActivity, i)
         }
@@ -382,6 +379,20 @@ class MainActivity : AppCompatActivity() {
         startService(
             Intent(this, MediaCastService::class.java).setAction(MediaCastService.ACTION_STOP)
         )
+    }
+
+    /** Miracast TV'ler (PIN'li "Ekran yansıtma" ekranı) için telefonun kendi yansıtma ekranını açar. */
+    private fun openSystemCastSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_CAST_SETTINGS))
+        } catch (e: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+                toast("Ayarlarda \"Yansıt / Cast / Smart View / Kablosuz ekran\" seçeneğini açın.")
+            } catch (_: Exception) {
+                toast("Telefon ayarlarından \"Ekran yansıtma / Cast\" özelliğini açın.")
+            }
+        }
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
