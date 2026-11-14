@@ -77,13 +77,13 @@ class CastV2Client(private val host: String, private val port: Int) {
     }
 
     /** HLS canlı yayın adresini TV'de oynatır. */
-    fun load(url: String) {
+    fun load(url: String, contentType: String = "application/x-mpegURL", live: Boolean = true) {
         val t = transportId ?: return
         send(SRC, t, NS_CONNECTION, JSONObject().put("type", "CONNECT"))
         val media = JSONObject()
             .put("contentId", url)
-            .put("streamType", "LIVE")
-            .put("contentType", "application/x-mpegURL")
+            .put("streamType", if (live) "LIVE" else "BUFFERED")
+            .put("contentType", contentType)
         send(
             SRC, t, NS_MEDIA,
             JSONObject()

@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.net.Uri
 import android.media.projection.MediaProjectionManager
 import android.net.ConnectivityManager
 import android.net.Network
@@ -50,6 +51,15 @@ class MainActivity : AppCompatActivity() {
             requestProjection()
         }
 
+    private var pendingFileDevice: TvDevice? = null
+
+    private val fileLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            val device = pendingFileDevice
+            pendingFileDevice = null
+            if (device != null && uri != null) sendFile(device, uri)
+        }
+
     private val projectionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val device = pendingDevice
@@ -73,6 +83,7 @@ class MainActivity : AppCompatActivity() {
         savedAdapter = DeviceAdapter(object : DeviceAdapter.Listener {
             override fun onCastClicked(device: TvDevice) = beginCast(device, saveFirst = false)
             override fun onStopClicked(device: TvDevice) = stopCast()
+            override fun onSendFileClicked(device: TvDevice) = beginSendFile(device)
             override fun onDeleteClicked(device: TvDevice) = deleteDevice(device)
         })
         foundAdapter = FoundDeviceAdapter()
@@ -323,10 +334,53 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.startForegroundService(this, i)
     }
 
+    /** "Video / Foto Gönder": dosya seç, TV'ye gönder (Cast butonu gibi, gecikmesiz). */
+    private fun beginSendFile(device: TvDevice) {
+        phoneOnline = net.isPhoneWifiConnected()
+        if (!phoneOnline) {
+            renderBanner()
+            toast("Telefon - Çevrimdışı")
+            return
+        }
+        if (CastState.castingDeviceId.value != null) {
+            toast("Önce mevcut yansıtmadan çıkın")
+            return
+        }
+        pendingFileDevice = device
+        fileLauncher.launch(arrayOf("video/*", "image/*", "audio/*"))
+    }
+
+    private fun sendFile(device: TvDevice, uri: Uri) {
+        lifecycleScope.launch {
+            val reachable = withContext(Dispatchers.IO) { net.isDeviceReachable(device) }
+            if (!reachable) {
+                statuses[device.id] = false
+                savedAdapter.setStatuses(statuses.toMap(), true)
+                renderBanner(extraOffline = listOf(device.name))
+                toast("${device.name} - Çevrimdışı")
+                return@launch
+            }
+            val mime = contentResolver.getType(uri) ?: "video/mp4"
+            val i = Intent(this@MainActivity, MediaCastService::class.java).apply {
+                action = MediaCastService.ACTION_START
+                putExtra(MediaCastService.EXTRA_URI, uri.toString())
+                putExtra(MediaCastService.EXTRA_MIME, mime)
+                putExtra(MediaCastService.EXTRA_HOST, device.host)
+                putExtra(MediaCastService.EXTRA_PORT, device.port)
+                putExtra(MediaCastService.EXTRA_DEVICE_ID, device.id)
+                putExtra(MediaCastService.EXTRA_DEVICE_NAME, device.name)
+            }
+            ContextCompat.startForegroundService(this@MainActivity, i)
+        }
+    }
+
     /** "Yansıtmadan Çık": TV'deki alıcı kapatılır, TV kendi ekranına döner. */
     private fun stopCast() {
         startService(
             Intent(this, ScreenCastService::class.java).setAction(ScreenCastService.ACTION_STOP)
+        )
+        startService(
+            Intent(this, MediaCastService::class.java).setAction(MediaCastService.ACTION_STOP)
         )
     }
 

@@ -14,6 +14,7 @@ class DeviceAdapter(private val listener: Listener) :
     interface Listener {
         fun onCastClicked(device: TvDevice)
         fun onStopClicked(device: TvDevice)
+        fun onSendFileClicked(device: TvDevice)
         fun onDeleteClicked(device: TvDevice)
     }
 
@@ -81,6 +82,8 @@ class DeviceAdapter(private val listener: Listener) :
         b.btnCast.setOnClickListener {
             if (casting) listener.onStopClicked(d) else listener.onCastClicked(d)
         }
+        b.btnSend.isEnabled = !casting
+        b.btnSend.setOnClickListener { listener.onSendFileClicked(d) }
         b.btnDelete.setOnClickListener { listener.onDeleteClicked(d) }
     }
 }

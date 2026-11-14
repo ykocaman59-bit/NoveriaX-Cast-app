@@ -45,8 +45,8 @@ class ScreenCastService : Service() {
 
         private const val CHANNEL_ID = "noveriax_cast"
         private const val NOTIF_ID = 1001
-        private const val MAX_DIMENSION = 1280
-        private const val BIT_RATE = 5_000_000
+        private const val MAX_DIMENSION = 1920
+        private const val BIT_RATE = 10_000_000
         private const val FPS = 30
     }
 
